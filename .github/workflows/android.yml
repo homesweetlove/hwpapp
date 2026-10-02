@@ -35,6 +35,10 @@ jobs:
             app/build/reports/lint-results-debug.html
   device-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 30, 35]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -51,13 +55,18 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: ${{ matrix.api }}
           arch: x86_64
           profile: pixel_2
           disable-animations: true
           script: ./gradlew --no-daemon connectedDebugAndroidTest
+      - name: Collect screen captures
+        if: always()
+        run: adb pull /sdcard/Android/data/com.homesweetlove.hwpapp/files/screenshots ui-screenshots || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: device-test-reports
-          path: app/build/reports/androidTests/
+          name: device-test-reports-api-${{ matrix.api }}
+          path: |
+            app/build/reports/androidTests/
+            ui-screenshots/

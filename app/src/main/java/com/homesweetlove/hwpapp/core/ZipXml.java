@@ -15,6 +15,7 @@ public final class ZipXml {
     public static final long MAX_BYTES = 128L * 1024 * 1024;
     public final Map<String, byte[]> entries = new LinkedHashMap<>();
     private final Map<String, Document> modified = new HashMap<>();
+    private final Map<String, Document> parsed = new HashMap<>();
     public ZipXml(File file) throws Exception {
         long total = 0;
         try (ZipInputStream zip = new ZipInputStream(new FileInputStream(file))) {
@@ -37,6 +38,7 @@ public final class ZipXml {
     }
     public Document xml(String name) throws Exception {
         if (modified.containsKey(name)) return modified.get(name);
+        if (parsed.containsKey(name)) return parsed.get(name);
         byte[] bytes = entries.get(name);
         if (bytes == null) throw new IOException("필수 항목이 없습니다: " + name);
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -51,10 +53,11 @@ public final class ZipXml {
         if (xml.replace("\u0000", "").toUpperCase(Locale.ROOT).contains("<!DOCTYPE")) throw new IOException("DTD 문서는 지원하지 않습니다.");
         javax.xml.parsers.DocumentBuilder builder = factory.newDocumentBuilder();
         builder.setEntityResolver((publicId, systemId) -> { throw new SAXException("외부 엔티티는 허용하지 않습니다."); });
-        return builder.parse(new ByteArrayInputStream(bytes));
+        Document document = builder.parse(new ByteArrayInputStream(bytes));
+        parsed.put(name, document); return document;
     }
     public void change(String name, Document document) { modified.put(name, document); }
-    public void remove(String name) { entries.remove(name); modified.remove(name); }
+    public void remove(String name) { entries.remove(name); modified.remove(name); parsed.remove(name); }
     public void save(File file) throws Exception {
         try (ZipOutputStream out = new ZipOutputStream(new FileOutputStream(file))) {
             for (Map.Entry<String, byte[]> item : entries.entrySet()) {
@@ -77,6 +80,7 @@ public final class ZipXml {
     }
     public static List<Element> children(Element parent, String name) {
         List<Element> result = new ArrayList<>();
+        if (parent == null) return result;
         for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling())
             if (node instanceof Element && name.equals(node.getLocalName())) result.add((Element) node);
         return result;

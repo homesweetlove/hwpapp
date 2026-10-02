@@ -54,5 +54,23 @@ final class PdfDocument implements AutoCloseable {
             output.save(file);
         } finally { source.delete(); }
     }
+    void rotate(int index) { PDPage page = document.getPage(index); page.setRotation((page.getRotation() + 90) % 360); }
+    void delete(int index) throws IOException { if (count() <= 1) throw new IOException("마지막 페이지는 삭제할 수 없습니다."); document.removePage(index); }
+    void reorder(java.util.List<Integer> order) throws IOException {
+        if (order.size() != count() || new java.util.HashSet<>(order).size() != count()) throw new IOException("모든 페이지를 한 번씩 지정하세요.");
+        java.util.List<PDPage> pages = new java.util.ArrayList<>(); for (int index : order) { if (index < 0 || index >= count()) throw new IOException("페이지 범위를 벗어났습니다."); pages.add(document.getPage(index)); }
+        while (count() > 0) document.removePage(0); for (PDPage page : pages) document.addPage(page);
+    }
+    void merge(File file) throws Exception {
+        try (PDDocument other = PDDocument.load(file)) {
+            if (other.isEncrypted() || !other.getCurrentAccessPermission().canAssembleDocument()) throw new IOException("병합할 수 없는 PDF입니다.");
+            if (count() + other.getNumberOfPages() > 300) throw new IOException("300페이지까지 병합할 수 있습니다.");
+            for (PDPage page : other.getPages()) document.importPage(page);
+        }
+    }
+    void extract(File file, java.util.List<Integer> indices) throws Exception {
+        if (indices.isEmpty()) throw new IOException("추출할 페이지가 없습니다.");
+        try (PDDocument output = new PDDocument()) { for (int index : indices) { if (index < 0 || index >= count()) throw new IOException("페이지 범위를 벗어났습니다."); output.importPage(document.getPage(index)); } output.save(file); }
+    }
     public void close() { try { document.close(); } catch (IOException ignored) { } }
 }

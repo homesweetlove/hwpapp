@@ -6,13 +6,13 @@ A local document viewer and content editor for HWP, HWPX, PDF and Excel. Android
 
 | Format | View and edit | Export |
 | --- | --- | --- |
-| HWP 5 | Text runs in paragraphs, table cells, headers, footers and footnotes; search | `.hwp` |
-| HWPX | Plain text nodes, including table text | `.hwpx` |
-| PDF | Rendered pages, Korean text overlays and freehand ink; undo | `.pdf` |
-| XLSX | Sheet selector, cell navigation, values and formula text | `.xlsx` |
-| XLS | Legacy BIFF8 values and formulas via JExcelAPI | `.xls` |
+| HWP 5 / HWPX | Text, find/replace, font, size, bold, alignment, insert/delete paragraphs; page layout preview with tables and embedded images | Original format or PDF |
+| PDF | Rendered pages, Korean text/ink, transparent signature images with size and placement; rotate/delete/reorder/merge/extract pages | PDF |
+| XLSX / XLS | Sheet and cell navigation, font/size/bold/alignment, general/number/currency/date/percentage formatting; formulas and calculated results; find/replace | Original format |
 
-Open a file through Android's document picker, tap a paragraph or cell to edit, and use **Save edited copy** to choose the output location. For PDF, enable the pen or enter text and tap the page to place it. Disable the pen to scroll. Unsaved edits prompt before closing or opening another file.
+Every completed edit creates a durable private-device checkpoint. Recover the latest document after restarting, undo/redo up to 20 checkpoints, or delete recovery data from Tools. Opening a new document replaces the previous document's recovery history. Files are always exported through Android's document picker.
+
+Tap a paragraph or cell for its edit menu. Use **Tools** for find/replace, Hangul layout/PDF export, or PDF page/signature operations. For a signature, import a transparent PNG, enter its width as a percentage of the page, then tap its location. Undo and repeat insertion to change an already placed signature.
 
 ## Build and install
 
@@ -28,18 +28,18 @@ The APK is `app/build/outputs/apk/debug/app-debug.apk`. Every main-branch push a
 
 ## Supported scope
 
-- HWP/HWPX and Excel show content, not a pixel-perfect reproduction of their printed layout. PDF displays original pages.
-- HWP preserves control objects, table structures and embedded assets. An edited run inherits its starting character style; mixed styles inside that run may change. Page/line layout is recalculated by Hangul on reopening. It does not insert/delete paragraphs or edit drawings. Range-tagged runs are read-only. HWP versions before 5, password-protected files and distribution documents are unsupported.
-- HWPX text nodes containing child controls are read-only. Editing simple nodes preserves the remaining package entries.
-- PDF edits add flattened transparent image overlays, including Korean text rendered with the device font. Existing PDF text is not rewritten. Encrypted/restricted PDFs and uncommon JPX images are unsupported. Existing digital signatures are not preserved as valid after editing.
-- XLSX retains untouched ZIP entry bytes and cell style IDs. Formula edits use `=`; cached calculation is not evaluated locally. Excel recalculates when reopened. Shared/array formula ranges, protected sheets and Strict OOXML are unsupported. Merged cells are shown as underlying cells rather than merged visual regions. XLSX drawings/charts are preserved but not displayed.
-- XLS uses JExcelAPI's BIFF8 copy writer; complex drawings/macros and unsupported legacy features may not survive. Use a copy and verify these files in Excel.
-- Numeric values beyond 15 significant digits and leading-zero identifiers are saved as text. Existing dates are displayed as their stored value in XLSX. There is no formatting toolbar or local formula engine.
-- Files are limited to 64 MB; expanded XML packages to 128 MB and 10,000 entries. Edits remain in memory until exported and do not survive process termination. Working copies are removed on normal document close; Android may evict cached files.
+- The local Hangul renderer reads physical paper size/margins, styled paragraphs, column widths, table cells and embedded raster images. It produces a paginated PDF using Android's native PDF canvas. This is a compatibility renderer, not the Hancom layout engine: floating/wrapped object positions, row-spanning cells, advanced borders, equations, vector drawings and multi-column layouts can differ or be unsupported. Row-spanning cells are expanded into rows; headers/footers/notes are placed in the content flow. The preview displays notices about detected limitations. Verify complex documents before sharing their PDF.
+- Font names are stored in the source document. The device substitutes missing fonts in preview/PDF. The renderer recalculates pagination rather than reproducing existing Hangul line segmentation. Existing HWP controls and embedded assets are retained on source-format export. Formatting a HWP text block applies to its paragraph, including its other runs. HWPX formatting applies to its run and the paragraph alignment.
+- HWP before version 5, encrypted/distribution documents and range-tagged text editing are unsupported. Paragraphs containing structural controls cannot be deleted. The last paragraph of a container cannot be deleted. HWPX text nodes containing child controls are read-only. Find/replace operates on editable text runs; matches spanning separate runs are not joined.
+- PDF text/ink/signatures are flattened overlays. The original PDF text is not rewritten. Every edit is baked into its checkpoint; undo restores the preceding checkpoint. Page extraction saves a chosen subset (repeat with other ranges to split a document). Rotation and image placement respect rotated crop boxes. Encrypted/restricted PDFs, some JPX images and preservation of signature validity are unsupported. Outline/page-label updates are not implemented for reordered/merged documents.
+- The formula interpreter supports arithmetic, powers, percentages, comparisons, concatenation, same/cross-sheet references and bounded ranges. Functions: `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, `IF`, `IFERROR`, `ROUND`, `ABS`, `AND`, `OR`. Unsupported functions show `#UNSUPPORTED(name)` rather than an invented result. Cycles, invalid references and division by zero produce explicit errors. It is a subset of Excel, not a full Excel calculation engine. Excel recalculates on reopening exports; the app does not write calculated caches.
+- Excel date/number/currency/percentage display and basic style editing are supported. Custom complex formats are approximated. XLSX drawings/charts are retained but not displayed; merged cells are shown as underlying cells. Shared/array formula editing, protected sheets and Strict OOXML are unsupported. Find/replace changes values, not formula expressions. Leading-zero identifiers and numbers beyond 15 significant digits remain text.
+- XLS uses JExcelAPI's BIFF8 copy writer. Unsupported legacy drawings/macros may not survive export. Verify those documents in Excel.
+- Input limit: 64 MB; expanded XML packages: 128 MB / 10,000 entries; PDF layout/merge: 300 pages. A recovery snapshot is limited to 96 MB. History retains at most 20 checkpoints and trims oldest records above 192 MB; a single current checkpoint is retained. Export errors roll edits back to the preceding checkpoint. The last in-progress stroke/dialog is not committed until applied. Recovery files are stored in Android's private application files and disappear on app-data deletion/uninstall.
 
 ## Verification
 
-Unit tests exercise HWP Unicode/control preservation and repeated editing, HWPX markup preservation, XLSX package/style preservation and recalculation metadata, XLS repeated exports, malformed XML and cell address validation. CI runs unit tests, Android lint and debug APK compilation. Physical-device UI verification is still required before a production release.
+Unit tests cover source-format round trips, Unicode and control preservation, HWP/HWPX styles and paragraph insertion/deletion, XLSX formatting and Excel date rules, calculated formulas/cycles/errors, durable undo/redo and failed checkpoints, XML bounds and page range validation. Android tests exercise PDF crop/rotation alignment, signatures and page management, and actual Hangul-to-PDF rendering. CI runs tests, lint, APK compilation and emulator tests. Physical-device testing remains advisable before production release.
 
 ## Dependencies
 

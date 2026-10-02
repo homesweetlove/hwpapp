@@ -151,6 +151,181 @@ public final class Spreadsheet implements AutoCloseable {
         if (dimension != null) xml.getDocumentElement().removeChild(dimension);
         zip.change(paths.get(index), xml);
     }
+    public String display(int index, String address) throws Exception {
+        Object result = calculate(index, address, new HashSet<>(), 0);
+        if (result instanceof FormulaEngine.Failure) return result.toString();
+        DocumentStyle style = style(index, address);
+        if (result instanceof Number) {
+            double value = ((Number) result).doubleValue();
+            if (style.numberFormat.equals("currency")) return "₩" + new java.text.DecimalFormat("#,##0.00").format(value);
+            if (style.numberFormat.equals("number")) return new java.text.DecimalFormat("#,##0.##").format(value);
+            if (style.numberFormat.equals("percent")) return new java.text.DecimalFormat("0.00%").format(value);
+            if (style.numberFormat.equals("date")) {
+                boolean mode1904 = false;
+                if (zip != null) {
+                    Element properties = ZipXml.child(zip.xml("xl/workbook.xml").getDocumentElement(), "workbookPr");
+                    mode1904 = properties != null && Arrays.asList("1", "true").contains(properties.getAttribute("date1904"));
+                }
+                java.time.LocalDate origin = java.time.LocalDate.of(mode1904 ? 1904 : 1899, mode1904 ? 1 : 12, mode1904 ? 1 : 31);
+                long days = (long) Math.floor(value);
+                if (!mode1904 && days >= 60) days--;
+                if (!mode1904 && (long) value == 60) return "1900-02-29";
+                return origin.plusDays(days).toString();
+            }
+        }
+        return FormulaEngine.text(result);
+    }
+    private Object calculate(int index, String address, Set<String> seen, int depth) {
+        String key = index + ":" + address;
+        if (depth > 64) return new FormulaEngine.Failure("#LIMIT!");
+        if (!seen.add(key)) return new FormulaEngine.Failure("#CYCLE!");
+        try {
+            String raw = value(index, address);
+            if (raw.startsWith("=")) return FormulaEngine.evaluate(raw, (sheetName, ref) -> {
+                int target = sheetName == null ? index : names.indexOf(sheetName);
+                return target < 0 ? new FormulaEngine.Failure("#REF!") : calculate(target, ref, seen, depth + 1);
+            });
+            if (zip != null) {
+                Element c = cellMaps.get(index).get(address);
+                if (c != null) {
+                    String type = c.getAttribute("t");
+                    if (type.equals("e")) return new FormulaEngine.Failure(raw);
+                    if (type.equals("b")) return raw.equals("1");
+                    if (type.equals("s") || type.equals("inlineStr") || type.equals("str")) return raw;
+                }
+            } else {
+                int[] coord = coordinate(address);
+                jxl.write.WritableSheet sheet = writableXls.getSheet(index);
+                if (coord[0] < sheet.getColumns() && coord[1] < sheet.getRows()) {
+                    jxl.Cell c = sheet.getCell(coord[0], coord[1]);
+                    if (c instanceof jxl.NumberCell) return ((jxl.NumberCell) c).getValue();
+                    if (c instanceof jxl.DateCell) return new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).format(((jxl.DateCell) c).getDate());
+                    if (c instanceof jxl.BooleanCell) return ((jxl.BooleanCell) c).getValue();
+                    return raw;
+                }
+            }
+            return raw.isEmpty() ? null : Double.valueOf(raw);
+        } catch (Exception unsupported) { return new FormulaEngine.Failure("#VALUE!"); }
+        finally { seen.remove(key); }
+    }
+    public List<String> addresses(int index) throws Exception {
+        if (xls != null) {
+            List<String> list = new ArrayList<>(); jxl.write.WritableSheet s = writableXls.getSheet(index);
+            if ((long) s.getColumns() * s.getRows() > 100000) throw new IOException("검색 범위가 너무 큽니다.");
+            for (int y = 0; y < s.getRows(); y++) for (int x = 0; x < s.getColumns(); x++) if (!s.getCell(x, y).getContents().isEmpty()) list.add(address(x, y));
+            return list;
+        }
+        sheet(index); return new ArrayList<>(cellMaps.get(index).keySet());
+    }
+    public int replace(String find, String replacement) throws Exception {
+        if (find.isEmpty()) throw new IllegalArgumentException("찾을 내용을 입력하세요.");
+        int count = 0;
+        for (int i = 0; i < names.size(); i++) for (String address : addresses(i)) {
+            String raw = value(i, address);
+            if (!raw.startsWith("=") && raw.contains(find)) { set(i, address, raw.replace(find, replacement)); count++; }
+        }
+        return count;
+    }
+    public DocumentStyle style(int index, String address) throws Exception {
+        DocumentStyle style = new DocumentStyle();
+        if (xls != null) {
+            int[] c = coordinate(address); jxl.write.WritableSheet sheet = writableXls.getSheet(index);
+            if (c[0] >= sheet.getColumns() || c[1] >= sheet.getRows()) return style;
+            jxl.format.CellFormat format = sheet.getCell(c[0], c[1]).getCellFormat();
+            if (format != null) {
+                style.font = format.getFont().getName(); style.size = format.getFont().getPointSize(); style.bold = format.getFont().getBoldWeight() > 400;
+                style.alignment = format.getAlignment() == jxl.format.Alignment.CENTRE ? "center" : format.getAlignment() == jxl.format.Alignment.RIGHT ? "right" : "left";
+                style.numberFormat = classifyFormat(format.getFormat().getFormatString());
+            }
+            return style;
+        }
+        sheet(index); Element cell = cellMaps.get(index).get(address.toUpperCase(Locale.ROOT));
+        if (cell == null || !zip.entries.containsKey("xl/styles.xml")) return style;
+        Document xml;
+        try { xml = zip.xml("xl/styles.xml"); } catch (Exception invalidStyle) { return style; }
+        List<Element> formats = ZipXml.children(ZipXml.child(xml.getDocumentElement(), "cellXfs"), "xf");
+        int id = cell.hasAttribute("s") ? Integer.parseInt(cell.getAttribute("s")) : 0;
+        if (id >= formats.size()) return style;
+        Element xf = formats.get(id);
+        Element fonts = ZipXml.child(xml.getDocumentElement(), "fonts");
+        int fontId = xf.hasAttribute("fontId") ? Integer.parseInt(xf.getAttribute("fontId")) : 0;
+        List<Element> fontList = ZipXml.children(fonts, "font");
+        if (fontId < fontList.size()) {
+            Element font = fontList.get(fontId), size = ZipXml.child(font, "sz"), face = ZipXml.child(font, "name");
+            if (size != null) style.size = Float.parseFloat(size.getAttribute("val"));
+            if (face != null) style.font = face.getAttribute("val");
+            Element b = ZipXml.child(font, "b"); style.bold = b != null && !Arrays.asList("0", "false").contains(b.getAttribute("val"));
+        }
+        Element alignment = ZipXml.child(xf, "alignment");
+        if (alignment != null && Arrays.asList("left", "center", "right").contains(alignment.getAttribute("horizontal"))) style.alignment = alignment.getAttribute("horizontal");
+        int format = xf.hasAttribute("numFmtId") ? Integer.parseInt(xf.getAttribute("numFmtId")) : 0;
+        if (format == 14 || format >= 15 && format <= 22) style.numberFormat = "date";
+        else if (format == 9 || format == 10) style.numberFormat = "percent";
+        else if (format >= 5 && format <= 8 || format >= 37 && format <= 44) style.numberFormat = "currency";
+        else if (format >= 1 && format <= 4) style.numberFormat = "number";
+        Element custom = ZipXml.child(xml.getDocumentElement(), "numFmts");
+        if (custom != null) for (Element item : ZipXml.children(custom, "numFmt")) if (item.getAttribute("numFmtId").equals("" + format)) style.numberFormat = classifyFormat(item.getAttribute("formatCode"));
+        return style;
+    }
+    private static String classifyFormat(String code) {
+        String f = code.toLowerCase(Locale.ROOT);
+        if (f.contains("yy") || f.contains("dd")) return "date";
+        if (f.contains("%")) return "percent";
+        if ((f.contains("$") || f.contains("₩"))) return "currency";
+        if (f.contains("0")) return "number";
+        return "general";
+    }
+    public void format(int index, String address, DocumentStyle style) throws Exception {
+        style.validate();
+        if (xls != null) {
+            int[] pos = coordinate(address); if (pos[0] > 255 || pos[1] > 65535) throw new IOException("XLS 범위를 벗어났습니다.");
+            jxl.write.WritableSheet sheet = writableXls.getSheet(index);
+            if (sheet.isProtected()) throw new IOException("보호된 시트입니다.");
+            jxl.write.WritableCell cell = sheet.getWritableCell(pos[0], pos[1]);
+            if (cell.getType() == jxl.CellType.EMPTY) { sheet.addCell(new jxl.write.Label(pos[0], pos[1], "")); cell = sheet.getWritableCell(pos[0], pos[1]); }
+            jxl.write.WritableCellFormat format = cell.getCellFormat() == null ? new jxl.write.WritableCellFormat() : new jxl.write.WritableCellFormat(cell.getCellFormat());
+            format.setFont(new jxl.write.WritableFont(jxl.write.WritableFont.createFont(style.font), Math.round(style.size), style.bold ? jxl.write.WritableFont.BOLD : jxl.write.WritableFont.NO_BOLD));
+            format.setAlignment(style.alignment.equals("center") ? jxl.format.Alignment.CENTRE : style.alignment.equals("right") ? jxl.format.Alignment.RIGHT : jxl.format.Alignment.LEFT);
+            if (!style.numberFormat.equals("general")) {
+                jxl.write.WritableCellFormat number = new jxl.write.WritableCellFormat(new jxl.write.WritableFont(format.getFont()), new jxl.write.NumberFormat(formatCode(style.numberFormat)));
+                number.setAlignment(format.getAlignment()); format = number;
+            }
+            cell.setCellFormat(format); return;
+        }
+        sheet(index);
+        Element cell = cellMaps.get(index).get(address.toUpperCase(Locale.ROOT));
+        if (cell == null) { set(index, address, ""); cell = cellMaps.get(index).get(address.toUpperCase(Locale.ROOT)); }
+        Document styles;
+        if (zip.entries.containsKey("xl/styles.xml")) styles = zip.xml("xl/styles.xml");
+        else {
+            String initial = "<styleSheet xmlns='" + NS + "'><fonts count='1'><font><sz val='11'/><name val='Calibri'/></font></fonts><fills count='2'><fill><patternFill patternType='none'/></fill><fill><patternFill patternType='gray125'/></fill></fills><borders count='1'><border/></borders><cellStyleXfs count='1'><xf numFmtId='0' fontId='0' fillId='0' borderId='0'/></cellStyleXfs><cellXfs count='1'><xf numFmtId='0' fontId='0' fillId='0' borderId='0' xfId='0'/></cellXfs></styleSheet>";
+            zip.entries.put("xl/styles.xml", initial.getBytes(java.nio.charset.StandardCharsets.UTF_8)); styles = zip.xml("xl/styles.xml");
+            Document rels = zip.xml("xl/_rels/workbook.xml.rels"); Element rel = rels.createElementNS(rels.getDocumentElement().getNamespaceURI(), "Relationship");
+            rel.setAttribute("Id", "rStyle" + UUID.randomUUID().toString().replace("-", "")); rel.setAttribute("Target", "styles.xml"); rel.setAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"); rels.getDocumentElement().appendChild(rel); zip.change("xl/_rels/workbook.xml.rels", rels);
+            Document types = zip.xml("[Content_Types].xml"); Element override = types.createElementNS(types.getDocumentElement().getNamespaceURI(), "Override"); override.setAttribute("PartName", "/xl/styles.xml"); override.setAttribute("ContentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"); types.getDocumentElement().appendChild(override); zip.change("[Content_Types].xml", types);
+        }
+        Element root = styles.getDocumentElement(), fonts = ZipXml.child(root, "fonts"), xfs = ZipXml.child(root, "cellXfs");
+        if (fonts == null || xfs == null) throw new IOException("셀 서식 정보가 올바르지 않습니다.");
+        List<Element> old = ZipXml.children(xfs, "xf"); int oldId = cell.hasAttribute("s") ? Integer.parseInt(cell.getAttribute("s")) : 0;
+        Element xf = oldId < old.size() ? (Element) old.get(oldId).cloneNode(true) : styles.createElementNS(NS, "xf");
+        List<Element> fontList = ZipXml.children(fonts, "font"); int oldFont = xf.hasAttribute("fontId") ? Integer.parseInt(xf.getAttribute("fontId")) : 0;
+        Element font = oldFont < fontList.size() ? (Element) fontList.get(oldFont).cloneNode(true) : styles.createElementNS(NS, "font");
+        attributeElement(styles, font, "name", "val", style.font); attributeElement(styles, font, "sz", "val", "" + style.size);
+        Element bold = ZipXml.child(font, "b"); if (bold != null) font.removeChild(bold); if (style.bold) font.appendChild(styles.createElementNS(NS, "b"));
+        xf.setAttribute("fontId", "" + fontList.size()); fonts.appendChild(font); fonts.setAttribute("count", "" + (fontList.size() + 1)); xf.setAttribute("applyFont", "1");
+        Element alignment = ZipXml.child(xf, "alignment"); if (alignment == null) { alignment = styles.createElementNS(NS, "alignment"); xf.appendChild(alignment); }
+        alignment.setAttribute("horizontal", style.alignment); xf.setAttribute("applyAlignment", "1");
+        int formatId = 0;
+        if (!style.numberFormat.equals("general")) {
+            Element formats = ZipXml.child(root, "numFmts"); if (formats == null) { formats = styles.createElementNS(NS, "numFmts"); root.insertBefore(formats, root.getFirstChild()); }
+            formatId = 164; for (Element f : ZipXml.children(formats, "numFmt")) formatId = Math.max(formatId, Integer.parseInt(f.getAttribute("numFmtId")) + 1);
+            Element f = styles.createElementNS(NS, "numFmt"); f.setAttribute("numFmtId", "" + formatId); f.setAttribute("formatCode", formatCode(style.numberFormat)); formats.appendChild(f); formats.setAttribute("count", "" + ZipXml.children(formats, "numFmt").size());
+        }
+        xf.setAttribute("numFmtId", "" + formatId); xf.setAttribute("applyNumberFormat", "1"); xfs.appendChild(xf); xfs.setAttribute("count", "" + (old.size() + 1));
+        cell.setAttribute("s", "" + old.size()); zip.change("xl/styles.xml", styles); zip.change(paths.get(index), sheets.get(index));
+    }
+    private static String formatCode(String type) { return type.equals("date") ? "yyyy-mm-dd" : type.equals("percent") ? "0.00%" : type.equals("currency") ? "\"₩\"#,##0.00" : "#,##0.##"; }
+    private static void attributeElement(Document xml, Element parent, String tag, String name, String value) { Element e = ZipXml.child(parent, tag); if (e == null) { e = xml.createElementNS(NS, tag); parent.appendChild(e); } e.setAttribute(name, value); }
     private static boolean numeric(String value) {
         if (!value.matches("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")) return false;
         try { return new BigDecimal(value).precision() <= 15 && Double.isFinite(Double.parseDouble(value)); }

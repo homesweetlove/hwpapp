@@ -1,19 +1,43 @@
 <resources>
     <style name="AppThemeBase" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#3182F6</item>
+        <item name="android:colorAccent">#007AFF</item>
+        <item name="android:colorControlActivated">#007AFF</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F5F4F0</item>
-        <item name="android:navigationBarColor">#F5F4F0</item>
+        <item name="android:statusBarColor">#F5F5F7</item>
+        <item name="android:navigationBarColor">#F5F5F7</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/MacSheet</item>
     </style>
     <style name="AppTheme" parent="AppThemeBase"/>
     <style name="AppThemeDark" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#6CA8FF</item>
+        <item name="android:colorAccent">#0A84FF</item>
+        <item name="android:colorControlActivated">#0A84FF</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#101318</item>
-        <item name="android:navigationBarColor">#1C222B</item>
+        <item name="android:statusBarColor">#161618</item>
+        <item name="android:navigationBarColor">#161618</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/MacSheetDark</item>
+    </style>
+
+    <!-- macOS-style sheets: rounded card, soft dim, scale-in motion -->
+    <style name="MacSheet" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/sheet_light</item>
+        <item name="android:colorAccent">#007AFF</item>
+        <item name="android:colorControlActivated">#007AFF</item>
+        <item name="android:backgroundDimAmount">0.28</item>
+        <item name="android:windowAnimationStyle">@style/MacSheetMotion</item>
+    </style>
+    <style name="MacSheetDark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/sheet_dark</item>
+        <item name="android:colorAccent">#0A84FF</item>
+        <item name="android:colorControlActivated">#0A84FF</item>
+        <item name="android:backgroundDimAmount">0.5</item>
+        <item name="android:windowAnimationStyle">@style/MacSheetMotion</item>
+    </style>
+    <style name="MacSheetMotion">
+        <item name="android:windowEnterAnimation">@anim/sheet_in</item>
+        <item name="android:windowExitAnimation">@anim/sheet_out</item>
     </style>
 </resources>

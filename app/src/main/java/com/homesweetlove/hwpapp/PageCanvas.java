@@ -67,7 +67,7 @@ final class PageCanvas extends View {
   final RectF bounds = new RectF();
   Path current;
   boolean ink;
-  int strokeColor = 0xff3182f6;
+  int strokeColor = 0xff007aff;
   float strokeWidth = 3f;
   String pendingText;
 

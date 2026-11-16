@@ -2,6 +2,10 @@
 
 # HWP Desk for Android
 
+[![Download test APK](https://img.shields.io/badge/Download-Android_APK_(debug)-2563EB?style=for-the-badge&logo=android&logoColor=white)](https://github.com/homesweetlove/hwpapp/actions/runs/43785549392)
+
+> **Test build (v0.3.0):** Open the linked successful workflow run, download **HWP-Desk-debug-apk** under Artifacts, unzip it, and install `app-debug.apk`. GitHub sign-in may be required. Artifacts expire; for newer builds use [Android APK workflow](https://github.com/homesweetlove/hwpapp/actions/workflows/android.yml). This is not a production-signed release.
+
 A local document viewer and content editor for HWP, HWPX, PDF and Excel. Android 8.0+; no server, account, API key or network permission.
 
 | Format | View and edit | Export |

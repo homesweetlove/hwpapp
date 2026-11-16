@@ -37,7 +37,9 @@ Windows에서는 `gradlew.bat testDebugUnitTest lintDebug assembleDebug`를 실�
 
 APK 위치: `app/build/outputs/apk/debug/app-debug.apk`
 
-메인에 푸시하면 [GitHub Actions](../../actions)의 **Android APK**에서 자동 빌드합니다. 성공한 실행의 **HWP-Desk-debug-apk**를 다운로드하고 압축을 풀어 APK를 설치하세요. 개인 테스트용 디버그 서명이며 정식 배포에는 별도의 고정 서명 키가 필요합니다.
+메인에 푸시하면 [GitHub Actions](../../actions)의 **Android APK**에서 자동 빌드합니다. 성공한 실행의 **HWP-Desk-debug-apk**를 다운로드하고 압축을 풀어 APK를 설치하세요. 개인 테스트용 디버그 서명이며 정식 배포에는 별도의 고정 서명 키가 필요합니다. 현재 GitHub Releases에 정식 배포 APK는 없습니다. Actions 산출물은 테스트 용도로만 사용하세요.
+
+정식 공개 배포 전에는 API 26·30·35 기기 테스트 성공을 확인하고, 실제 기기에서 HWP/HWPX/PDF/XLS(X) 저장·재열기를 점검한 뒤, [서드파티 라이선스 조건](THIRD_PARTY.md)을 검토하세요. 서명 키와 비밀번호는 Git에 올리지 마세요.
 
 ## 실제 지원 범위
 

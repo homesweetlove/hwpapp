@@ -59,6 +59,9 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
+          emulator-boot-timeout: 900
+          ram-size: 2048M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: ./gradlew --no-daemon connectedDebugAndroidTest
       - name: Collect screen captures
         if: always()

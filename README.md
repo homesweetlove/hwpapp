@@ -24,7 +24,7 @@ Use Android Studio with JDK 17, Android SDK 35 and Gradle 8.9:
 
 Windows: `gradlew.bat testDebugUnitTest lintDebug assembleDebug`.
 
-The APK is `app/build/outputs/apk/debug/app-debug.apk`. Every main-branch push also builds it in [GitHub Actions](../../actions). Open the successful **Android APK** run and download **HWP-Desk-debug-apk**. This is a debug-signed APK for personal testing; enable installation from that download source. A production release requires your own stable signing key, which is never committed.
+The APK is `app/build/outputs/apk/debug/app-debug.apk`. Every main-branch push also builds it in [GitHub Actions](../../actions). Open the successful **Android APK** run and download **HWP-Desk-debug-apk**. This is a debug-signed APK for personal testing; enable installation from that download source. A production release requires your own stable signing key, which is never committed. There is currently no signed production APK in GitHub Releases; Actions artifacts are for testing only. Before a production release, confirm API 26/30/35 device tests and physical-device open/edit/save/reopen checks, and review [third-party redistribution obligations](THIRD_PARTY.md). Never commit signing keys or passwords.
 
 ## Supported scope
 

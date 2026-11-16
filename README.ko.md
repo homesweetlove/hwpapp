@@ -2,6 +2,10 @@
 
 # HWP Desk 안드로이드
 
+[![APK 다운로드](https://img.shields.io/badge/Android-APK_다운로드_(테스트용)-2563EB?style=for-the-badge&logo=android&logoColor=white)](https://github.com/homesweetlove/hwpapp/actions/runs/43785549392)
+
+> **v0.3.0 테스트 APK:** 버튼을 누른 뒤 성공한 실행의 **Artifacts → HWP-Desk-debug-apk**를 다운로드하고 압축을 해제해 `app-debug.apk`를 설치하세요. GitHub 로그인이 필요할 수 있습니다. 빌드 파일은 보관 기간이 지나면 만료되므로 [최신 Android APK 빌드](https://github.com/homesweetlove/hwpapp/actions/workflows/android.yml)를 이용하세요. 정식 서명 배포본은 아닙니다.
+
 **0.3.0** — HWP·HWPX·PDF·엑셀 파일을 휴대폰과 태블릿에서 열고 내용을 수정하는 앱입니다. Android 8.0 이상에서 동작하며 서버·로그인·API 키가 필요 없습니다. 인터넷 권한도 요청하지 않습니다.
 
 | 형식 | 확인·수정 기능 | 저장 |

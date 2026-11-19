@@ -2,16 +2,18 @@ package com.homesweetlove.hwpapp;
 
 import android.app.*;
 import android.content.*;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.*;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.*;
 import android.net.Uri;
 import android.os.*;
 import android.print.*;
 import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.view.*;
+import android.view.inputmethod.EditorInfo;
 import android.widget.*;
 import androidx.core.content.FileProvider;
 import com.homesweetlove.hwpapp.core.*;
@@ -44,12 +46,18 @@ public final class MainActivity extends Activity {
   private int page, layoutPage, blockStart, sheet, firstRow, firstCol;
   private boolean busy, destroyed, dirty, layoutMode, inkMode;
   private List<Integer> extraction;
-  private int ink, green, background, surface, muted, border;
+  private int ink, accent, background, surface, muted, border, chrome, fill, well;
+  private FrameLayout stage;
+  private TextView typePill, hud;
+  private int topInset, readingWidth = -1, turn, pendingScroll = -1;
+  private int flashBlock = -1, flashSearch = -1, lastSheet = -1;
+  private boolean revealFlash;
+  private String lastScreen = "", flashCell;
   private boolean dark, wide;
   private Button undoButton, redoButton, saveButton, toolsButton;
   private ProgressBar progress;
   private float zoom = 1f;
-  private int penColor = 0xff3182f6;
+  private int penColor = 0xff007aff;
   private float penWidth = 3f;
   private boolean rebuildPending;
 
@@ -107,21 +115,54 @@ public final class MainActivity extends Activity {
             || mode == 0
                 && (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                     == Configuration.UI_MODE_NIGHT_YES;
-    ink = Color.parseColor(dark ? "#F2F4F6" : "#191F28");
-    green = Color.parseColor(dark ? "#6CA8FF" : "#3182F6");
-    background = Color.parseColor(dark ? "#101318" : "#F2F4F6");
-    surface = Color.parseColor(dark ? "#1C222B" : "#FFFFFF");
-    muted = Color.parseColor(dark ? "#A5B0BD" : "#6B7684");
-    border = Color.parseColor(dark ? "#303945" : "#E5E8EB");
+    // macOS system palette: soft window canvas, white sheets, Apple blue accent.
+    ink = Color.parseColor(dark ? "#F5F5F7" : "#1D1D1F");
+    accent = Color.parseColor(dark ? "#0A84FF" : "#007AFF");
+    background = Color.parseColor(dark ? "#161618" : "#F5F5F7");
+    surface = Color.parseColor(dark ? "#242427" : "#FFFFFF");
+    muted = Color.parseColor(dark ? "#A1A1A6" : "#6E6E73");
+    border = Color.parseColor(dark ? "#3A3A3E" : "#DCDCE1");
+    chrome = Color.parseColor(dark ? "#1E1E21" : "#ECECF0");
+    fill = Color.parseColor(dark ? "#323236" : "#E8E8ED");
+    well = Color.parseColor(dark ? "#1C1C1E" : "#F2F2F7");
+  }
+
+  private int typeColor(String ext) {
+    switch (ext) {
+      case "xlsx":
+      case "xls":
+        return Color.parseColor(dark ? "#30D158" : "#34C759");
+      case "pdf":
+        return Color.parseColor(dark ? "#FF453A" : "#FF3B30");
+      case "hwp":
+      case "hwpx":
+        return accent;
+      default:
+        return Color.parseColor("#8E8E93");
+    }
+  }
+
+  private static int alpha(int color, int alpha) {
+    return (color & 0x00ffffff) | (alpha << 24);
+  }
+
+  private static int blend(int from, int to, float amount) {
+    return Color.rgb(
+        Math.round(Color.red(from) + (Color.red(to) - Color.red(from)) * amount),
+        Math.round(Color.green(from) + (Color.green(to) - Color.green(from)) * amount),
+        Math.round(Color.blue(from) + (Color.blue(to) - Color.blue(from)) * amount));
   }
 
   private void buildShell() {
     wide = getResources().getConfiguration().screenWidthDp >= 840;
+    stage = new FrameLayout(this);
+    stage.setBackgroundColor(background);
     root = vertical();
     root.setBackgroundColor(background);
-    setContentView(root);
+    stage.addView(root, new FrameLayout.LayoutParams(-1, -1));
+    setContentView(stage);
     getWindow().setStatusBarColor(background);
-    getWindow().setNavigationBarColor(surface);
+    getWindow().setNavigationBarColor(background);
     getWindow()
         .getDecorView()
         .setSystemUiVisibility(
@@ -151,75 +192,189 @@ public final class MainActivity extends Activity {
             top = Math.max(top, insets.getDisplayCutout().getSafeInsetTop());
           }
           root.setPadding(left, top, right, bottom);
+          topInset = top;
           return insets;
         });
     root.requestApplyInsets();
-    LinearLayout header = vertical();
-    header.setPadding(dp(24), dp(14), dp(24), dp(10));
-    TextView title = label("HWP Desk", 22, ink);
-    title.setTypeface(null, Typeface.BOLD);
-    header.addView(title);
-    subtitle = label(input == null ? "내 문서를 위한 작은 작업실" : name, 13, muted);
+
+    // Title bar: traffic lights, app badge, document name and its type.
+    LinearLayout header = new LinearLayout(this);
+    header.setOrientation(LinearLayout.HORIZONTAL);
+    header.setGravity(Gravity.CENTER_VERTICAL);
+    header.setPadding(dp(18), dp(10), dp(18), dp(10));
+    header.addView(trafficLights());
+    ImageView badge = new ImageView(this);
+    badge.setImageResource(R.drawable.ic_app);
+    badge.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+    badgeParams.setMarginStart(dp(14));
+    header.addView(badge, badgeParams);
+    LinearLayout titles = vertical();
+    titles.setPadding(dp(10), 0, dp(8), 0);
+    header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView title = label("HWP Desk", 17, ink);
+    title.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    title.setPadding(0, 0, 0, 0);
+    titles.addView(title);
+    subtitle = label(input == null ? "내 문서를 위한 작은 작업실" : name, 12, muted);
+    subtitle.setPadding(0, 0, 0, 0);
     subtitle.setMaxLines(1);
     subtitle.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-    header.addView(subtitle);
+    titles.addView(subtitle);
+    typePill = label("", 11, Color.WHITE);
+    typePill.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    typePill.setPadding(dp(9), dp(3), dp(9), dp(3));
+    typePill.setVisibility(View.GONE);
+    header.addView(typePill);
     root.addView(header);
+    View rule = new View(this);
+    rule.setBackgroundColor(border);
+    root.addView(rule, new LinearLayout.LayoutParams(-1, 1));
     progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
     progress.setIndeterminate(true);
+    progress.setIndeterminateTintList(ColorStateList.valueOf(accent));
     progress.setVisibility(View.GONE);
     root.addView(progress, new LinearLayout.LayoutParams(-1, dp(3)));
+
     LinearLayout body = new LinearLayout(this);
     body.setOrientation(LinearLayout.HORIZONTAL);
     root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
     if (wide) {
+      // Finder-style sidebar.
       LinearLayout rail = vertical();
-      rail.setPadding(dp(16), dp(16), dp(16), dp(16));
-      rail.setBackgroundColor(surface);
-      body.addView(rail, new LinearLayout.LayoutParams(dp(208), -1));
-      rail.addView(label("작업 공간", 12, muted));
-      rail.addView(button("문서 열기", () -> guard(() -> picker(OPEN, "*/*"))));
-      rail.addView(button("새 문서", this::newDocumentMenu));
-      rail.addView(button("문서 도구", this::tools));
-      rail.addView(button("모양 설정", this::appearance));
-      rail.addView(label("오프라인으로\n차분하게 작업하세요.", 14, muted));
+      rail.setPadding(dp(12), dp(14), dp(12), dp(18));
+      rail.setBackgroundColor(chrome);
+      body.addView(rail, new LinearLayout.LayoutParams(dp(220), -1));
+      rail.addView(section("작업 공간"));
+      rail.addView(
+          sidebarItem(R.drawable.ic_open, "문서 열기", () -> guard(() -> picker(OPEN, "*/*"))));
+      rail.addView(sidebarItem(R.drawable.ic_add, "새 문서", this::newDocumentMenu));
+      rail.addView(section("설정"));
+      rail.addView(sidebarItem(R.drawable.ic_tools, "문서 도구", this::tools));
+      rail.addView(sidebarItem(R.drawable.ic_appearance, "모양 설정", this::appearance));
+      rail.addView(new View(this), new LinearLayout.LayoutParams(-1, 0, 1));
+      rail.addView(label("오프라인으로\n차분하게 작업하세요.", 13, muted));
+      View divider = new View(this);
+      divider.setBackgroundColor(border);
+      body.addView(divider, new LinearLayout.LayoutParams(1, -1));
     }
     FrameLayout host = new FrameLayout(this);
     body.addView(host, new LinearLayout.LayoutParams(0, -1, 1));
     scroll = new ScrollView(this);
     scroll.setFillViewport(true);
     scroll.setClipToPadding(false);
-    scroll.setPadding(dp(wide ? 28 : 20), dp(12), dp(wide ? 28 : 20), dp(24));
-    FrameLayout.LayoutParams scrollParams =
-        new FrameLayout.LayoutParams(
-            wide
-                ? Math.min(dp(1100), getResources().getDisplayMetrics().widthPixels - dp(220))
-                : -1,
-            -1,
-            Gravity.CENTER_HORIZONTAL);
-    host.addView(scroll, scrollParams);
+    scroll.setPadding(dp(wide ? 28 : 16), dp(14), dp(wide ? 28 : 16), dp(128));
+    int scrollWidth =
+        wide ? Math.min(dp(1100), getResources().getDisplayMetrics().widthPixels - dp(221)) : -1;
+    readingWidth = wide ? Math.min(dp(780), scrollWidth - dp(56)) : -1;
+    host.addView(scroll, new FrameLayout.LayoutParams(scrollWidth, -1, Gravity.CENTER_HORIZONTAL));
     content = vertical();
     scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
-    LinearLayout bottom = vertical();
-    bottom.setBackgroundColor(surface);
-    bottom.setPadding(dp(16), dp(8), dp(16), dp(8));
-    root.addView(bottom);
-    LinearLayout actions = horizontal();
-    bottom.addView(actions);
-    actions.addView(button("열기", () -> guard(() -> picker(OPEN, "*/*"))));
-    saveButton = button("저장", () -> exportPicker(SAVE));
-    actions.addView(saveButton);
-    undoButton = button("↶", () -> travel(false));
+
+    // Floating Dock.
+    LinearLayout dock = vertical();
+    GradientDrawable dockShape = round(alpha(surface, 0xF2), 24);
+    dockShape.setStroke(1, alpha(border, 0xCC));
+    dock.setBackground(dockShape);
+    dock.setElevation(dp(14));
+    dock.setPadding(dp(6), dp(4), dp(6), dp(5));
+    FrameLayout.LayoutParams dockParams =
+        new FrameLayout.LayoutParams(
+            wide ? dp(560) : -1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+    dockParams.setMargins(dp(12), 0, dp(12), dp(10));
+    host.addView(dock, dockParams);
+    LinearLayout actions = new LinearLayout(this);
+    actions.setOrientation(LinearLayout.HORIZONTAL);
+    dock.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+    actions.addView(
+        dockButton(R.drawable.ic_open, "열기", () -> guard(() -> picker(OPEN, "*/*"))),
+        new LinearLayout.LayoutParams(0, -2, 1));
+    saveButton = dockButton(R.drawable.ic_save, "저장", () -> exportPicker(SAVE));
+    actions.addView(saveButton, new LinearLayout.LayoutParams(0, -2, 1));
+    undoButton = dockButton(R.drawable.ic_undo, "되돌리기", () -> travel(false));
     undoButton.setContentDescription("실행 취소");
-    actions.addView(undoButton);
-    redoButton = button("↷", () -> travel(true));
+    actions.addView(undoButton, new LinearLayout.LayoutParams(0, -2, 1));
+    redoButton = dockButton(R.drawable.ic_redo, "다시하기", () -> travel(true));
     redoButton.setContentDescription("다시 실행");
-    actions.addView(redoButton);
-    toolsButton = button("도구", this::tools);
-    actions.addView(toolsButton);
+    actions.addView(redoButton, new LinearLayout.LayoutParams(0, -2, 1));
+    toolsButton = dockButton(R.drawable.ic_tools, "도구", this::tools);
+    actions.addView(toolsButton, new LinearLayout.LayoutParams(0, -2, 1));
     status = label("HWP · HWPX · PDF · XLSX · XLS", 11, muted);
-    status.setMaxLines(2);
-    bottom.addView(status);
+    status.setPadding(dp(8), 0, dp(8), dp(2));
+    status.setGravity(Gravity.CENTER);
+    status.setMaxLines(1);
+    status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+    dock.addView(status);
+    Motion.fadeIn(dock, 120);
+
+    // Notification banner that slides down from the top, like macOS notifications.
+    hud = label("", 14, ink);
+    GradientDrawable hudShape = round(alpha(surface, 0xF7), 18);
+    hudShape.setStroke(1, alpha(border, 0xCC));
+    hud.setBackground(hudShape);
+    hud.setElevation(dp(12));
+    hud.setGravity(Gravity.CENTER);
+    hud.setPadding(dp(18), dp(11), dp(18), dp(11));
+    hud.setMaxLines(4);
+    hud.setVisibility(View.GONE);
+    hud.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+    FrameLayout.LayoutParams hudParams =
+        new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+    hudParams.setMargins(dp(24), dp(12), dp(24), 0);
+    stage.addView(hud, hudParams);
+    lastScreen = "";
     updateStatus();
+  }
+
+  private View trafficLights() {
+    LinearLayout lights = new LinearLayout(this);
+    lights.setOrientation(LinearLayout.HORIZONTAL);
+    lights.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+    for (String color : new String[] {"#FF5F57", "#FEBC2E", "#28C840"}) {
+      View dot = new View(this);
+      GradientDrawable shape = new GradientDrawable();
+      shape.setShape(GradientDrawable.OVAL);
+      int base = Color.parseColor(color);
+      shape.setColor(base);
+      shape.setStroke(1, blend(base, Color.BLACK, 0.18f));
+      dot.setBackground(shape);
+      LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(12), dp(12));
+      p.setMarginEnd(dp(8));
+      lights.addView(dot, p);
+    }
+    return lights;
+  }
+
+  private TextView section(String text) {
+    TextView v = label(text, 11, muted);
+    v.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    v.setPadding(dp(10), dp(16), dp(10), dp(4));
+    return v;
+  }
+
+  private View sidebarItem(int icon, String text, Runnable action) {
+    LinearLayout row = new LinearLayout(this);
+    row.setOrientation(LinearLayout.HORIZONTAL);
+    row.setGravity(Gravity.CENTER_VERTICAL);
+    row.setMinimumHeight(dp(44));
+    row.setPadding(dp(10), 0, dp(10), 0);
+    row.setBackground(ripple(Color.TRANSPARENT, 10));
+    ImageView glyph = new ImageView(this);
+    glyph.setImageDrawable(icon(icon, accent, 20));
+    row.addView(glyph, new LinearLayout.LayoutParams(dp(20), dp(20)));
+    TextView caption = label(text, 15, ink);
+    caption.setPadding(dp(12), 0, 0, 0);
+    row.addView(caption);
+    row.setFocusable(true);
+    row.setClickable(true);
+    row.setContentDescription(text);
+    Motion.press(row, 0.97f);
+    row.setOnClickListener(
+        v -> {
+          if (!busy) action.run();
+        });
+    return row;
   }
 
   private int dp(float n) {
@@ -245,23 +400,94 @@ public final class MainActivity extends Activity {
     return v;
   }
 
+  private Drawable icon(int res, int color, int size) {
+    Drawable d = getDrawable(res).mutate();
+    d.setTint(color);
+    d.setBounds(0, 0, dp(size), dp(size));
+    return d;
+  }
+
+  private void tintIcons(TextView view, int color) {
+    for (Drawable d : view.getCompoundDrawablesRelative()) if (d != null) d.setTint(color);
+  }
+
+  private Drawable ripple(int color, int radius) {
+    GradientDrawable mask = round(Color.WHITE, radius);
+    return new RippleDrawable(
+        ColorStateList.valueOf(alpha(accent, dark ? 0x40 : 0x26)),
+        color == Color.TRANSPARENT ? null : round(color, radius),
+        mask);
+  }
+
+  /** Secondary toolbar button: soft grey pill, ink label, accent glyph. */
   private Button button(String text, Runnable action) {
+    return button(0, text, action);
+  }
+
+  private Button button(int iconRes, String text, Runnable action) {
     Button b = new Button(this);
     b.setText(text);
     b.setTextSize(14);
     b.setAllCaps(false);
-    b.setTypeface(null, Typeface.BOLD);
-    b.setTextColor(green);
+    b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+    b.setTextColor(ink);
     b.setMinWidth(dp(48));
     b.setMinimumWidth(dp(48));
     b.setMinHeight(dp(48));
     b.setMinimumHeight(dp(48));
-    b.setPadding(dp(14), dp(8), dp(14), dp(8));
-    b.setBackground(round(surface, 14));
+    boolean iconOnly = text.isEmpty();
+    b.setPadding(
+        dp(iconRes != 0 ? (iconOnly ? 14 : 12) : 16), dp(8), dp(iconOnly ? 14 : 16), dp(8));
+    if (iconRes != 0) {
+      b.setCompoundDrawablesRelative(icon(iconRes, accent, 18), null, null, null);
+      b.setCompoundDrawablePadding(iconOnly ? 0 : dp(6));
+    }
+    b.setBackground(ripple(fill, 12));
     b.setStateListAnimator(null);
+    Motion.press(b, 0.95f);
     b.setOnClickListener(
         v -> {
           if (!busy) action.run();
+        });
+    return b;
+  }
+
+  /** Primary action: filled with the accent colour. */
+  private Button primary(int iconRes, String text, Runnable action) {
+    Button b = button(iconRes, text, action);
+    b.setTextColor(Color.WHITE);
+    b.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    b.setBackground(ripple(accent, 12));
+    b.setElevation(dp(2));
+    tintIcons(b, Color.WHITE);
+    return b;
+  }
+
+  /** Dock item: icon above a short label, bounces when chosen. */
+  private Button dockButton(int iconRes, String text, Runnable action) {
+    Button b = new Button(this);
+    b.setText(text);
+    b.setTextSize(10.5f);
+    b.setAllCaps(false);
+    b.setTextColor(ink);
+    b.setMaxLines(1);
+    b.setEllipsize(android.text.TextUtils.TruncateAt.END);
+    b.setMinWidth(0);
+    b.setMinimumWidth(0);
+    b.setMinHeight(dp(54));
+    b.setMinimumHeight(dp(54));
+    b.setPadding(dp(2), dp(7), dp(2), dp(4));
+    b.setCompoundDrawablesRelative(null, icon(iconRes, accent, 22), null, null);
+    b.setCompoundDrawablePadding(dp(3));
+    b.setBackground(ripple(Color.TRANSPARENT, 16));
+    b.setStateListAnimator(null);
+    Motion.press(b, 0.9f);
+    b.setOnClickListener(
+        v -> {
+          if (!busy) {
+            Motion.bounce(v);
+            action.run();
+          }
         });
     return b;
   }
@@ -273,60 +499,211 @@ public final class MainActivity extends Activity {
     return bg;
   }
 
-  private LinearLayout card(String tag, String title, String detail, Runnable action) {
-    LinearLayout c = vertical();
-    c.setPadding(dp(22), dp(18), dp(22), dp(18));
-    c.setBackground(round(surface, 22));
+  /** White sheet with a hairline edge; casts a soft shadow in light mode. */
+  private Drawable sheet(int radius) {
+    GradientDrawable shape = round(surface, radius);
+    shape.setStroke(1, alpha(border, dark ? 0xFF : 0x99));
+    return shape;
+  }
+
+  private void lift(View view, int elevation) {
+    view.setElevation(dp(dark ? 0 : elevation));
+    if (Build.VERSION.SDK_INT >= 28) {
+      view.setOutlineAmbientShadowColor(alpha(Color.BLACK, 0x30));
+      view.setOutlineSpotShadowColor(alpha(Color.BLACK, 0x40));
+    }
+  }
+
+  /** Rounded colour tile used as a document-type icon (HWP / XLS / PDF). */
+  private TextView tile(String text, int color, int size) {
+    TextView v = label(text, size >= 44 ? 12 : 10, Color.WHITE);
+    v.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    v.setGravity(Gravity.CENTER);
+    v.setPadding(0, 0, 0, 0);
+    GradientDrawable bg =
+        new GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[] {blend(color, Color.WHITE, 0.22f), color});
+    bg.setCornerRadius(dp(size * 0.27f));
+    v.setBackground(bg);
+    v.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    return v;
+  }
+
+  private TextView pill(String text) {
+    TextView v = label(text, 12, accent);
+    v.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    v.setPadding(dp(10), dp(5), dp(10), dp(5));
+    v.setBackground(round(alpha(accent, dark ? 0x33 : 0x1A), 10));
+    return v;
+  }
+
+  /** A position pill and a short hint, wrapping on narrow screens. */
+  private View infoRow(String position, String hint) {
+    LinearLayout row = horizontal();
+    row.setPadding(0, dp(10), 0, dp(4));
+    row.addView(pill(position));
+    TextView text = label(hint, 12, muted);
+    text.setPadding(dp(2), dp(5), 0, dp(5));
+    row.addView(text);
+    return row;
+  }
+
+  private TextView sectionTitle(String text) {
+    TextView v = label(text, 13, muted);
+    v.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    v.setPadding(dp(4), dp(10), 0, dp(8));
+    return v;
+  }
+
+  private void gradientText(TextView view, int from, int to) {
+    view.addOnLayoutChangeListener(
+        (v, l, t, r, b, ol, ot, or, ob) -> {
+          android.text.Layout layout = view.getLayout();
+          float width = 1;
+          if (layout != null)
+            for (int i = 0; i < layout.getLineCount(); i++)
+              width = Math.max(width, layout.getLineWidth(i));
+          view.getPaint()
+              .setShader(new LinearGradient(0, 0, width, 0, from, to, Shader.TileMode.CLAMP));
+        });
+  }
+
+  private LinearLayout card(String tag, String ext, String title, String detail, Runnable action) {
+    LinearLayout c = new LinearLayout(this);
+    c.setOrientation(LinearLayout.HORIZONTAL);
+    c.setGravity(Gravity.CENTER_VERTICAL);
+    c.setPadding(dp(16), dp(16), dp(14), dp(16));
+    c.setBackground(
+        new RippleDrawable(
+            ColorStateList.valueOf(alpha(accent, dark ? 0x40 : 0x1F)), sheet(18), null));
+    lift(c, 2);
     LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
     p.bottomMargin = dp(12);
     c.setLayoutParams(p);
-    TextView badge = label(tag, 12, green);
-    badge.setTypeface(null, Typeface.BOLD);
-    c.addView(badge);
-    TextView heading = label(title, 20, ink);
-    heading.setTypeface(null, Typeface.BOLD);
-    c.addView(heading);
-    c.addView(label(detail, 14, muted));
+    c.addView(
+        tile(ext.toUpperCase(Locale.ROOT), typeColor(ext), 48),
+        new LinearLayout.LayoutParams(dp(48), dp(48)));
+    LinearLayout text = vertical();
+    text.setPadding(dp(14), 0, dp(8), 0);
+    c.addView(text, new LinearLayout.LayoutParams(0, -2, 1));
+    TextView badge = label(tag, 11, muted);
+    badge.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    badge.setPadding(0, 0, 0, dp(2));
+    text.addView(badge);
+    TextView heading = label(title, 18, ink);
+    heading.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    heading.setPadding(0, 0, 0, dp(2));
+    heading.setMaxLines(2);
+    heading.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+    text.addView(heading);
+    TextView body = label(detail, 14, muted);
+    body.setPadding(0, 0, 0, 0);
+    body.setLineSpacing(0, 1.2f);
+    text.addView(body);
     if (action != null) {
+      ImageView chevron = new ImageView(this);
+      chevron.setImageDrawable(icon(R.drawable.ic_chevron, muted, 18));
+      chevron.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+      c.addView(chevron, new LinearLayout.LayoutParams(dp(18), dp(18)));
       c.setOnClickListener(
           v -> {
             if (!busy) action.run();
           });
       c.setFocusable(true);
+      c.setClickable(true);
       c.setContentDescription(title + ". " + detail);
+      Motion.press(c, 0.98f);
     }
     return c;
   }
 
+  private void updateHeader() {
+    if (typePill == null) return;
+    if (input == null) {
+      typePill.setVisibility(View.GONE);
+      return;
+    }
+    typePill.setText(extension.toUpperCase(Locale.ROOT));
+    typePill.setBackground(round(typeColor(extension), 8));
+    typePill.setVisibility(View.VISIBLE);
+  }
+
+  /** New screens settle in with a stagger; refreshed screens just pulse the part that changed. */
+  private void transition(String key, View changed) {
+    boolean settling = pendingScroll >= 0;
+    if (key.equals(lastScreen)) {
+      if (!settling && changed != null) Motion.refresh(changed);
+    } else Motion.stagger(content, dp(14));
+    lastScreen = key;
+  }
+
+  /** Page turns slide the page in from the side of travel. */
+  private void turnPage(String key, View page) {
+    if (turn != 0 && key.equals(lastScreen)) Motion.slide(page, turn, dp(56));
+    else transition(key, page);
+    lastScreen = key;
+    turn = 0;
+  }
+
+  private void restoreScroll() {
+    if (pendingScroll < 0) return;
+    int y = pendingScroll;
+    pendingScroll = -1;
+    scroll.post(() -> scroll.scrollTo(0, y));
+  }
+
   private void home() {
     content.removeAllViews();
-    TextView hero = label("문서 작업을\n가볍게", 34, ink);
-    hero.setTypeface(null, Typeface.BOLD);
-    hero.setPadding(0, dp(16), 0, dp(14));
+    pendingScroll = -1;
+    updateHeader();
+    TextView hero = label("문서 작업을\n가볍게", wide ? 42 : 34, ink);
+    hero.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+    hero.setLineSpacing(0, 1.05f);
+    hero.setPadding(dp(2), dp(18), 0, dp(8));
+    gradientText(hero, accent, Color.parseColor(dark ? "#BF5AF2" : "#AF52DE"));
     content.addView(hero);
-    content.addView(label("한글부터 엑셀까지, 한 곳에서.", 16, muted));
+    TextView lead = label("한글부터 엑셀까지, 한 곳에서.", 16, muted);
+    lead.setPadding(dp(2), 0, 0, 0);
+    content.addView(lead);
     LinearLayout quick = horizontal();
-    quick.setPadding(0, dp(12), 0, dp(20));
-    Button open = button("문서 열기", () -> guard(() -> picker(OPEN, "*/*")));
-    open.setTextColor(Color.WHITE);
-    open.setBackground(round(0xff3182f6, 14));
-    quick.addView(open);
-    quick.addView(button("새 문서", this::newDocumentMenu));
-    quick.addView(button("모양", this::appearance));
+    quick.setPadding(0, dp(18), 0, dp(18));
+    quick.addView(primary(R.drawable.ic_open, "문서 열기", () -> guard(() -> picker(OPEN, "*/*"))));
+    quick.addView(button(R.drawable.ic_add, "새 문서", this::newDocumentMenu));
+    quick.addView(button(R.drawable.ic_appearance, "모양", this::appearance));
     content.addView(quick);
-    if (history != null && history.available())
-      content.addView(card("이어 하기", history.name(), "자동 저장된 마지막 작업을 이어서 열어요", this::restore));
-    content.addView(
-        card("HWP · HWPX", "한글 문서", "문단과 서식을 고치고 PDF로 내보내세요", () -> picker(OPEN, "*/*")));
-    content.addView(
-        card("XLSX · XLS", "엑셀 작업", "함수 계산, 범위 붙여넣기, 셀 서식을 한 번에", () -> picker(OPEN, "*/*")));
-    content.addView(
-        card(
-            "PDF",
-            "읽기부터 서명까지",
-            "확대해서 읽고, 필기하고, 페이지를 정리하세요",
-            () -> picker(OPEN, "application/pdf")));
-    content.addView(label("편집은 자동 저장 · 원본은 별도 보관\n문서는 기기 안에서 처리됩니다.", 13, muted));
+    if (history != null && history.available()) {
+      content.addView(sectionTitle("이어 하기"));
+      content.addView(
+          card(
+              "자동 저장됨",
+              history.extension(),
+              history.name(),
+              "마지막 작업을 그대로 이어서 열어요",
+              this::restore));
+    }
+    content.addView(sectionTitle("무엇을 할까요?"));
+    View[] cards = {
+      card("HWP · HWPX", "hwp", "한글 문서", "문단과 서식을 고치고 PDF로 내보내세요", () -> picker(OPEN, "*/*")),
+      card("XLSX · XLS", "xlsx", "엑셀 작업", "함수 계산, 범위 붙여넣기, 셀 서식을 한 번에", () -> picker(OPEN, "*/*")),
+      card("PDF", "pdf", "읽기부터 서명까지", "확대해서 읽고, 필기하고, 페이지를 정리하세요", () -> picker(OPEN, "application/pdf"))
+    };
+    if (wide) {
+      LinearLayout row = new LinearLayout(this);
+      row.setOrientation(LinearLayout.HORIZONTAL);
+      for (int i = 0; i < cards.length; i++) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1);
+        if (i < cards.length - 1) p.setMarginEnd(dp(12));
+        p.bottomMargin = dp(12);
+        row.addView(cards[i], p);
+      }
+      content.addView(row);
+    } else for (View card : cards) content.addView(card);
+    TextView footer = label("편집은 자동 저장 · 원본은 별도 보관\n문서는 기기 안에서만 처리됩니다.", 13, muted);
+    footer.setPadding(dp(4), dp(10), 0, dp(6));
+    footer.setLineSpacing(0, 1.25f);
+    content.addView(footer);
+    transition("home", null);
   }
 
   private void newDocumentMenu() {
@@ -492,10 +869,9 @@ public final class MainActivity extends Activity {
   }
 
   private void functionHelp() {
-    LinearLayout form = vertical();
-    form.setPadding(dp(20), dp(4), dp(20), dp(12));
+    LinearLayout form = form();
     EditText search = field("함수 이름 검색", "");
-    form.addView(search);
+    addField(form, search);
     ListView list = new ListView(this);
     List<String> functions = SpreadsheetFunctions.names();
     ArrayAdapter<String> adapter =
@@ -570,7 +946,7 @@ public final class MainActivity extends Activity {
 
   private void penSettings() {
     String[] colors = {"파랑", "검정", "빨강", "초록"};
-    int[] values = {0xff3182f6, 0xff191f28, 0xffe5484d, 0xff229c6a};
+    int[] values = {0xff007aff, 0xff1d1d1f, 0xffff3b30, 0xff34c759};
     menu(
         "펜 색",
         colors,
@@ -870,6 +1246,7 @@ public final class MainActivity extends Activity {
   }
 
   private void mutate(String text, Job mutation, Runnable redraw) {
+    int y = scroll == null ? 0 : scroll.getScrollY();
     job(
         text,
         () -> {
@@ -883,7 +1260,10 @@ public final class MainActivity extends Activity {
             throw failure;
           }
         },
-        redraw,
+        () -> {
+          pendingScroll = y;
+          redraw.run();
+        },
         true);
   }
 
@@ -903,7 +1283,8 @@ public final class MainActivity extends Activity {
 
   private void show() {
     subtitle.setText(name);
-    scroll.scrollTo(0, 0);
+    updateHeader();
+    if (pendingScroll < 0) scroll.scrollTo(0, 0);
     if (hangul != null) showHangul();
     else if (excel != null) showExcel();
     else if (pdf != null) showPdf();
@@ -1145,10 +1526,10 @@ public final class MainActivity extends Activity {
   }
 
   private void replaceDialog() {
-    LinearLayout fields = vertical();
+    LinearLayout fields = form();
     EditText find = field("찾을 내용", ""), replacement = field("바꿀 내용", "");
-    fields.addView(find);
-    fields.addView(replacement);
+    addField(fields, find);
+    addField(fields, replacement);
     new AlertDialog.Builder(this)
         .setTitle("모두 바꾸기")
         .setView(fields)
@@ -1177,44 +1558,47 @@ public final class MainActivity extends Activity {
   private void showHangul() {
     layoutMode = false;
     content.removeAllViews();
+    updateHeader();
     LinearLayout nav = horizontal();
     content.addView(nav);
-    nav.addView(
-        button(
-            "이전",
-            () -> {
-              blockStart = Math.max(0, blockStart - 40);
-              showHangul();
-            }));
-    nav.addView(
-        button(
-            "다음",
-            () -> {
-              if (blockStart + 40 < hangul.blocks.size()) blockStart += 40;
-              showHangul();
-            }));
-    nav.addView(button("찾기", this::searchHangul));
-    nav.addView(button("레이아웃", this::preview));
+    nav.addView(button(R.drawable.ic_back, "이전", () -> hangulPage(-1)));
+    nav.addView(button(R.drawable.ic_forward, "다음", () -> hangulPage(1)));
+    nav.addView(button(R.drawable.ic_search, "찾기", this::searchHangul));
+    nav.addView(button(R.drawable.ic_layout, "레이아웃", this::preview));
     int end = Math.min(blockStart + 40, hangul.blocks.size());
     content.addView(
-        label(
-            (blockStart + 1) + "–" + end + " / " + hangul.blocks.size() + " · 문단을 눌러 편집",
-            12,
-            green));
+        infoRow(
+            (blockStart + 1) + "–" + end + " / " + hangul.blocks.size(),
+            "문단을 누르면 바로 고쳐요 · 길게 누르면 서식·추가·삭제"));
+    // The document reads like a page: one white sheet, comfortable line height, no clutter.
+    LinearLayout paper = vertical();
+    paper.setBackground(sheet(14));
+    lift(paper, 3);
+    paper.setPadding(dp(wide ? 36 : 10), dp(wide ? 32 : 14), dp(wide ? 36 : 10), dp(wide ? 32 : 14));
+    LinearLayout.LayoutParams paperParams = new LinearLayout.LayoutParams(readingWidth, -2);
+    paperParams.gravity = Gravity.CENTER_HORIZONTAL;
+    paperParams.topMargin = dp(6);
+    paperParams.bottomMargin = dp(10);
+    content.addView(paper, paperParams);
+    View highlighted = null;
     for (int index = blockStart; index < end; index++) {
       TextBlock block = hangul.blocks.get(index);
-      LinearLayout card = vertical();
-      card.setPadding(dp(12), dp(8), dp(12), dp(8));
-      card.setBackground(round(surface, 18));
-      LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-      params.bottomMargin = dp(8);
-      content.addView(card, params);
-      card.addView(label(block.label + (block.editable ? "" : " · 읽기 전용"), 11, green));
-      TextView text = label(block.text.isEmpty() ? "(빈 문단)" : block.text, 17, ink);
-      card.addView(text);
+      final int position = index;
+      LinearLayout row = vertical();
+      row.setPadding(dp(10), dp(7), dp(10), dp(7));
+      row.setBackground(ripple(Color.TRANSPARENT, 10));
+      boolean located = !block.label.startsWith("본문");
+      if (located || !block.editable) {
+        TextView where = label(block.label + (block.editable ? "" : " · 읽기 전용"), 11, muted);
+        where.setPadding(0, 0, 0, dp(2));
+        row.addView(where);
+      }
+      TextView text = label(block.text.isEmpty() ? "빈 문단" : block.text, 17, ink);
+      text.setPadding(0, 0, 0, 0);
+      text.setLineSpacing(0, 1.42f);
       try {
         DocumentStyle style = hangul.style(block);
-        text.setTextSize(style.size + 3);
+        text.setTextSize(Math.max(15, Math.min(34, style.size + 3)));
         text.setTypeface(Typeface.create(style.font, style.bold ? Typeface.BOLD : Typeface.NORMAL));
         text.setGravity(
             style.alignment.equals("center")
@@ -1222,41 +1606,121 @@ public final class MainActivity extends Activity {
                 : style.alignment.equals("right") ? Gravity.END : Gravity.START);
       } catch (Exception ignored) {
       }
-      card.setOnClickListener(
+      if (block.text.isEmpty()) {
+        text.setTextSize(13);
+        text.setTextColor(alpha(muted, 0x99));
+      } else if (!block.editable) text.setTextColor(blend(ink, muted, 0.35f));
+      row.addView(text);
+      row.setClickable(true);
+      row.setFocusable(true);
+      row.setContentDescription(
+          (block.text.isEmpty() ? "빈 문단" : block.text)
+              + (block.editable ? ". 눌러서 고치기" : ". 읽기 전용"));
+      Motion.press(row, 0.99f);
+      row.setOnClickListener(
           v -> {
-            if (!busy && block.editable)
-              menu(
-                  "문단 편집",
-                  new String[] {"텍스트 수정", "글꼴·크기·굵게·정렬", "아래에 문단 추가", "문단 삭제"},
-                  choice -> {
-                    if (choice == 0)
-                      edit(
-                          "텍스트 수정",
-                          block.text,
-                          false,
-                          value -> mutate("수정 중…", () -> block.set(value), this::show));
-                    else if (choice == 1) {
-                      try {
-                        styleDialog(
-                            hangul.style(block),
-                            false,
-                            style ->
-                                mutate("서식 적용 중…", () -> hangul.format(block, style), this::show));
-                      } catch (Exception e) {
-                        error(e);
-                      }
-                    } else if (choice == 2)
-                      edit(
-                          "새 문단 내용",
-                          "",
-                          false,
-                          value ->
-                              mutate(
-                                  "문단 추가 중…", () -> hangul.insertAfter(block, value), this::show));
-                    else mutate("문단 삭제 중…", () -> hangul.deleteParagraph(block), this::show);
-                  });
+            if (busy) return;
+            if (!block.editable) message("이 부분은 읽기 전용이라 고칠 수 없어요.");
+            else quickEdit(block, position);
           });
+      row.setOnLongClickListener(
+          v -> {
+            if (!busy && block.editable) paragraphMenu(block, position);
+            return true;
+          });
+      paper.addView(row);
+      if (position == flashBlock) highlighted = row;
     }
+    LinearLayout footer = horizontal();
+    footer.setPadding(0, dp(4), 0, 0);
+    if (blockStart > 0) footer.addView(button(R.drawable.ic_back, "앞 문단들", () -> hangulPage(-1)));
+    if (end < hangul.blocks.size())
+      footer.addView(button(R.drawable.ic_forward, "다음 문단들", () -> hangulPage(1)));
+    content.addView(footer);
+    if (highlighted != null) {
+      View row = highlighted;
+      Motion.flash(row, alpha(accent, dark ? 0x55 : 0x33), dp(10));
+      if (revealFlash)
+        scroll.post(() -> scroll.smoothScrollTo(0, Math.max(0, paper.getTop() + row.getTop() - dp(96))));
+    }
+    flashBlock = -1;
+    revealFlash = false;
+    turnPage("hangul", paper);
+    restoreScroll();
+  }
+
+  private void hangulPage(int direction) {
+    int next = Math.max(0, Math.min(blockStart + direction * 40, hangul.blocks.size() - 1));
+    next -= next % 40;
+    if (next == blockStart) return;
+    blockStart = next;
+    turn = direction;
+    scroll.scrollTo(0, 0);
+    showHangul();
+  }
+
+  private void quickEdit(TextBlock block, int position) {
+    edit(
+        "문단 고치기",
+        block.text,
+        false,
+        value ->
+            mutate(
+                "수정 중…",
+                () -> block.set(value),
+                () -> {
+                  flashBlock = position;
+                  show();
+                }),
+        "서식·추가·삭제",
+        () -> paragraphMenu(block, position));
+  }
+
+  private void paragraphMenu(TextBlock block, int position) {
+    menu(
+        "문단 편집",
+        new String[] {"텍스트 수정", "글꼴·크기·굵게·정렬", "아래에 문단 추가", "문단 삭제"},
+        choice -> {
+          if (choice == 0) quickEdit(block, position);
+          else if (choice == 1) {
+            try {
+              styleDialog(
+                  hangul.style(block),
+                  false,
+                  style ->
+                      mutate(
+                          "서식 적용 중…",
+                          () -> hangul.format(block, style),
+                          () -> {
+                            flashBlock = position;
+                            show();
+                          }));
+            } catch (Exception e) {
+              error(e);
+            }
+          } else if (choice == 2)
+            edit(
+                "새 문단 내용",
+                "",
+                false,
+                value ->
+                    mutate(
+                        "문단 추가 중…",
+                        () -> hangul.insertAfter(block, value),
+                        () -> {
+                          flashBlock = position + 1;
+                          show();
+                        }));
+          else
+            new AlertDialog.Builder(this)
+                .setTitle("문단 삭제")
+                .setMessage("이 문단을 지웁니다. 되돌리기로 다시 살릴 수 있어요.")
+                .setNegativeButton("취소", null)
+                .setPositiveButton(
+                    "삭제",
+                    (d, w) -> mutate("문단 삭제 중…", () -> hangul.deleteParagraph(block), this::show))
+                .show();
+        });
   }
 
   private void searchHangul() {
@@ -1266,12 +1730,18 @@ public final class MainActivity extends Activity {
         false,
         query -> {
           if (query.isEmpty()) return;
+          int from = flashSearch < 0 ? blockStart - 1 : flashSearch;
           for (int offset = 1; offset <= hangul.blocks.size(); offset++) {
-            int i = (blockStart + offset) % hangul.blocks.size();
+            int i = (from + offset + hangul.blocks.size()) % hangul.blocks.size();
             if (hangul.blocks.get(i).text.contains(query)) {
-              blockStart = i;
-              showHangul();
+              int pageStart = i - i % 40;
+              turn = pageStart == blockStart ? 0 : pageStart > blockStart ? 1 : -1;
+              blockStart = pageStart;
+              flashBlock = i;
+              flashSearch = i;
+              revealFlash = true;
               scroll.scrollTo(0, 0);
+              showHangul();
               return;
             }
           }
@@ -1316,35 +1786,47 @@ public final class MainActivity extends Activity {
                 }
                 setBitmap(next);
                 content.removeAllViews();
+                updateHeader();
                 LinearLayout nav = horizontal();
                 content.addView(nav);
-                nav.addView(button("텍스트", this::showHangul));
+                nav.addView(button(R.drawable.ic_text, "글로 보기", this::showHangul));
                 nav.addView(
                     button(
+                        R.drawable.ic_back,
                         "이전",
                         () -> {
                           if (layoutPage > 0) {
                             layoutPage--;
+                            turn = -1;
                             showLayout();
                           }
                         }));
                 nav.addView(
                     button(
+                        R.drawable.ic_forward,
                         "다음",
                         () -> {
                           if (layoutPage + 1 < layoutPdf.count()) {
                             layoutPage++;
+                            turn = 1;
                             showLayout();
                           }
                         }));
-                nav.addView(button("PDF 저장", () -> exportPicker(EXPORT_PDF)));
+                nav.addView(primary(R.drawable.ic_save, "PDF 저장", () -> exportPicker(EXPORT_PDF)));
                 content.addView(
-                    label("레이아웃 " + (layoutPage + 1) + " / " + layoutPdf.count(), 12, muted));
-                content.addView(label(layoutNotice, 12, muted));
+                    infoRow((layoutPage + 1) + " / " + layoutPdf.count() + " 페이지", "레이아웃 미리보기"));
+                TextView notice = label(layoutNotice, 12, ink);
+                notice.setLineSpacing(0, 1.25f);
+                notice.setPadding(dp(12), dp(10), dp(12), dp(10));
+                notice.setBackground(
+                    round(alpha(Color.parseColor(dark ? "#FFD60A" : "#FF9F0A"), dark ? 0x26 : 0x1F), 10));
+                LinearLayout.LayoutParams noticeParams = new LinearLayout.LayoutParams(-1, -2);
+                noticeParams.bottomMargin = dp(6);
+                content.addView(notice, noticeParams);
                 ImageView image = new ImageView(this);
                 image.setAdjustViewBounds(true);
                 image.setImageBitmap(next);
-                addPage(image);
+                turnPage("layout", addPage(image));
               });
         },
         () -> {});
@@ -1381,90 +1863,147 @@ public final class MainActivity extends Activity {
 
   private void drawSheet(List<String[]> rows, List<DocumentStyle[]> styles) {
     content.removeAllViews();
-    Spinner spinner = new Spinner(this);
-    spinner.setAdapter(
-        new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, excel.names));
-    spinner.setSelection(sheet);
-    content.addView(spinner);
-    spinner.setOnItemSelectedListener(
-        new AdapterView.OnItemSelectedListener() {
-          public void onNothingSelected(AdapterView<?> parent) {}
+    updateHeader();
+    // Sheet tabs as a segmented control, like Numbers.
+    HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+    tabScroll.setHorizontalScrollBarEnabled(false);
+    LinearLayout tabs = new LinearLayout(this);
+    tabs.setOrientation(LinearLayout.HORIZONTAL);
+    tabs.setPadding(dp(3), dp(3), dp(3), dp(3));
+    tabs.setBackground(round(fill, 13));
+    tabScroll.addView(tabs);
+    for (int i = 0; i < excel.names.size(); i++) {
+      final int index = i;
+      Button tab =
+          button(
+              excel.names.get(i),
+              () -> {
+                if (sheet != index) {
+                  sheet = index;
+                  firstRow = firstCol = 0;
+                  showExcel();
+                }
+              });
+      tab.setMinHeight(dp(44));
+      tab.setMinimumHeight(dp(44));
+      if (i == sheet) {
+        tab.setBackground(ripple(surface, 10));
+        tab.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        tab.setElevation(dp(1));
+      } else {
+        tab.setBackground(ripple(Color.TRANSPARENT, 10));
+        tab.setTextColor(muted);
+      }
+      tab.setContentDescription(excel.names.get(i) + (i == sheet ? ", 선택됨" : ""));
+      tabs.addView(tab);
+    }
+    LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(-2, -2);
+    tabParams.bottomMargin = dp(8);
+    content.addView(tabScroll, tabParams);
+    if (sheet != lastSheet) lastScreen = "";
+    lastSheet = sheet;
 
-          public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-            if (!busy && sheet != position) {
-              sheet = position;
-              firstRow = firstCol = 0;
-              showExcel();
-            }
-          }
-        });
     LinearLayout nav = horizontal();
     content.addView(nav);
     nav.addView(
         button(
-            "←",
+            R.drawable.ic_back,
+            "앞 열",
             () -> {
+              if (firstCol == 0) return;
               firstCol = Math.max(0, firstCol - 5);
               showExcel();
             }));
     nav.addView(
         button(
-            "→",
+            R.drawable.ic_forward,
+            "뒤 열",
             () -> {
               firstCol = Math.min(extension.equals("xls") ? 251 : 16379, firstCol + 5);
               showExcel();
             }));
-    nav.addView(button("셀 이동", () -> edit("셀 주소", "A1", false, address -> jump(address))));
-    nav.addView(button("찾기", this::searchSheet));
-    LinearLayout verticalNav = horizontal();
-    content.addView(verticalNav);
-    verticalNav.addView(
+    nav.addView(
         button(
-            "이전 20행",
+            R.drawable.ic_up,
+            "위로",
             () -> {
+              if (firstRow == 0) return;
               firstRow = Math.max(0, firstRow - 20);
               showExcel();
             }));
-    verticalNav.addView(
+    nav.addView(
         button(
-            "다음 20행",
+            R.drawable.ic_down,
+            "아래로",
             () -> {
               firstRow = Math.min(extension.equals("xls") ? 65516 : 1048556, firstRow + 20);
               showExcel();
             }));
-    content.addView(label("셀을 눌러 값·수식·서식을 편집하세요", 12, muted));
+    nav.addView(
+        button(
+            R.drawable.ic_target,
+            "셀 이동",
+            () -> edit("셀 주소", "A1", false, address -> jump(address))));
+    nav.addView(button(R.drawable.ic_search, "찾기", this::searchSheet));
+    content.addView(
+        infoRow(
+            Spreadsheet.address(firstCol, firstRow)
+                + " : "
+                + Spreadsheet.address(firstCol + 4, firstRow + Math.max(0, rows.size() - 1)),
+            "셀을 누르면 값·수식을, 길게 누르면 서식을 고쳐요"));
+
+    LinearLayout frame = vertical();
+    frame.setBackground(sheet(14));
+    frame.setClipToOutline(true);
+    lift(frame, 2);
     HorizontalScrollView area = new HorizontalScrollView(this);
     TableLayout table = new TableLayout(this);
     area.addView(table);
-    content.addView(area);
+    frame.addView(area);
+    LinearLayout.LayoutParams frameParams = new LinearLayout.LayoutParams(-1, -2);
+    frameParams.topMargin = dp(6);
+    content.addView(frame, frameParams);
+    int cellWidth = dp(wide ? 150 : 120), gutter = dp(46);
+    int headerFill = dark ? Color.parseColor("#2C2C30") : Color.parseColor("#F2F2F6");
+    int zebra = dark ? Color.parseColor("#28282B") : Color.parseColor("#FAFAFC");
+    int grid = alpha(border, dark ? 0xFF : 0xB3);
     TableRow headings = new TableRow(this);
     table.addView(headings);
     TextView corner = label("", 12, muted);
-    corner.setWidth(dp(36));
+    corner.setWidth(gutter);
+    corner.setBackground(cellBackground(headerFill, grid, false));
     headings.addView(corner);
     for (int col = 0; col < 5; col++) {
       TextView heading =
           label(Spreadsheet.address(firstCol + col, 0).replaceAll("[0-9]", ""), 12, muted);
-      heading.setWidth(dp(125));
+      heading.setWidth(cellWidth);
       heading.setGravity(Gravity.CENTER);
-      heading.setTypeface(null, Typeface.BOLD);
+      heading.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+      heading.setPadding(0, dp(9), 0, dp(9));
+      heading.setBackground(cellBackground(headerFill, grid, false));
       headings.addView(heading);
     }
+    int errorColor = Color.parseColor(dark ? "#FF6961" : "#D70015");
     for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
       TableRow row = new TableRow(this);
       table.addView(row);
       TextView number = label("" + (firstRow + rowIndex + 1), 12, muted);
-      number.setWidth(dp(36));
+      number.setWidth(gutter);
       number.setGravity(Gravity.CENTER);
+      number.setBackground(cellBackground(headerFill, grid, false));
       row.addView(number);
+      int rowFill = rowIndex % 2 == 1 ? zebra : surface;
       for (int colIndex = 0; colIndex < 5; colIndex++) {
         if (rows.get(rowIndex)[colIndex] == null) continue;
         String address = Spreadsheet.address(firstCol + colIndex, firstRow + rowIndex);
         DocumentStyle style = styles.get(rowIndex)[colIndex];
-        TextView cell = label(rows.get(rowIndex)[colIndex], Math.round(style.size + 2), ink);
-        cell.setWidth(dp(125));
-        cell.setMinHeight(dp(52));
-        cell.setPadding(dp(10), dp(12), dp(10), dp(12));
+        String shown = rows.get(rowIndex)[colIndex];
+        TextView cell = label(shown, Math.max(12, Math.min(24, Math.round(style.size + 2))), ink);
+        if (shown.startsWith("#") && (shown.endsWith("!") || shown.endsWith("?") || shown.contains("(")))
+          cell.setTextColor(errorColor);
+        cell.setWidth(cellWidth);
+        cell.setMinHeight(dp(48));
+        cell.setPadding(dp(10), dp(10), dp(10), dp(10));
         cell.setMaxLines(2);
         cell.setEllipsize(android.text.TextUtils.TruncateAt.END);
         cell.setFocusable(true);
@@ -1476,51 +2015,79 @@ public final class MainActivity extends Activity {
                     : style.alignment.equals("center")
                         ? Gravity.CENTER_HORIZONTAL
                         : Gravity.START));
-        GradientDrawable bg = round(surface, 0);
-        bg.setStroke(dp(1), border);
-        cell.setBackground(bg);
+        cell.setBackground(cellBackground(rowFill, grid, true));
         row.addView(cell);
-        cell.setContentDescription(address + " " + rows.get(rowIndex)[colIndex]);
+        cell.setContentDescription(address + " " + shown);
         cell.setOnClickListener(
             v -> {
-              if (!busy)
-                menu(
-                    address,
-                    new String[] {"값·수식 수정", "글꼴·정렬·표시 형식"},
-                    choice -> {
-                      if (choice == 0)
-                        job(
-                            "셀 원문 읽는 중…",
-                            () -> {
-                              String raw = excel.value(sheet, address);
-                              runOnUiThread(
-                                  () -> {
-                                    if (!destroyed)
-                                      edit(
-                                          address + " 수정",
-                                          raw,
-                                          true,
-                                          value ->
-                                              mutate(
-                                                  "셀 수정 중…",
-                                                  () -> excel.set(sheet, address, value),
-                                                  this::show));
-                                  });
-                            },
-                            () -> {});
-                      else
-                        styleDialog(
-                            style,
-                            true,
-                            format ->
-                                mutate(
-                                    "셀 서식 적용 중…",
-                                    () -> excel.format(sheet, address, format),
-                                    this::show));
-                    });
+              if (!busy) editCell(address, style);
             });
+        cell.setOnLongClickListener(
+            v -> {
+              if (!busy) styleCell(address, style);
+              return true;
+            });
+        if (address.equals(flashCell)) Motion.flash(cell, alpha(accent, dark ? 0x66 : 0x40), 0);
       }
     }
+    flashCell = null;
+    transition("sheet", frame);
+    restoreScroll();
+  }
+
+  /** Hairline grid: only the right and bottom edges, so lines never double up. */
+  private Drawable cellBackground(int color, int line, boolean touchable) {
+    GradientDrawable edge = new GradientDrawable();
+    edge.setColor(line);
+    GradientDrawable body = new GradientDrawable();
+    body.setColor(color);
+    LayerDrawable layers = new LayerDrawable(new Drawable[] {edge, body});
+    layers.setLayerInset(1, 0, 0, 1, 1);
+    return touchable
+        ? new RippleDrawable(
+            ColorStateList.valueOf(alpha(accent, dark ? 0x40 : 0x2A)), layers, null)
+        : layers;
+  }
+
+  private void editCell(String address, DocumentStyle style) {
+    job(
+        "셀 원문 읽는 중…",
+        () -> {
+          String raw = excel.value(sheet, address);
+          runOnUiThread(
+              () -> {
+                if (!destroyed)
+                  edit(
+                      address + " 수정",
+                      raw,
+                      true,
+                      value ->
+                          mutate(
+                              "셀 수정 중…",
+                              () -> excel.set(sheet, address, value),
+                              () -> {
+                                flashCell = address;
+                                show();
+                              }),
+                      "서식",
+                      () -> styleCell(address, style));
+              });
+        },
+        () -> {});
+  }
+
+  private void styleCell(String address, DocumentStyle style) {
+    styleDialog(
+        style,
+        true,
+        format ->
+            mutate(
+                "셀 서식 적용 중…",
+                () -> excel.format(sheet, address, format),
+                () -> {
+                  flashCell = address;
+                  show();
+                }));
   }
 
   private void jump(String address) {
@@ -1579,29 +2146,35 @@ public final class MainActivity extends Activity {
 
   private void drawPdf() {
     content.removeAllViews();
+    updateHeader();
     LinearLayout nav = horizontal();
     content.addView(nav);
     nav.addView(
         button(
+            R.drawable.ic_back,
             "이전",
             () -> {
               if (page > 0) {
                 page--;
+                turn = -1;
                 showPdf();
               }
             }));
     nav.addView(
         button(
+            R.drawable.ic_forward,
             "다음",
             () -> {
               if (page + 1 < pdf.count()) {
                 page++;
+                turn = 1;
                 showPdf();
               }
             }));
     nav.addView(
         button(
-            "페이지",
+            R.drawable.ic_pages,
+            "페이지 이동",
             () ->
                 edit(
                     "페이지 번호",
@@ -1609,18 +2182,19 @@ public final class MainActivity extends Activity {
                     false,
                     value -> {
                       try {
-                        int n = Integer.parseInt(value);
+                        int n = Integer.parseInt(value.trim());
                         if (n < 1 || n > pdf.count()) throw new IOException("페이지 범위를 벗어났습니다.");
+                        turn = Integer.compare(n - 1, page);
                         page = n - 1;
                         showPdf();
                       } catch (Exception e) {
                         error(e);
                       }
                     })));
-    content.addView(label((page + 1) + " / " + pdf.count() + " 페이지 · 도구에서 서명·페이지 관리", 12, green));
     LinearLayout tools = horizontal();
+    tools.setPadding(0, dp(6), 0, 0);
     content.addView(tools);
-    Button pen = button("펜 켜기", () -> {});
+    Button pen = button(R.drawable.ic_pen, "펜", () -> {});
     tools.addView(pen);
     pen.setOnClickListener(
         v -> {
@@ -1629,11 +2203,13 @@ public final class MainActivity extends Activity {
             inkMode = pageCanvas.ink;
             pageCanvas.pendingText = null;
             pageCanvas.pendingImage = null;
-            pen.setText(pageCanvas.ink ? "펜 끄기" : "펜 켜기");
+            penLook(pen, pageCanvas.ink);
+            message(pageCanvas.ink ? "펜을 켰어요. 페이지에 바로 쓰세요." : "펜을 껐어요. 화면을 움직일 수 있어요.");
           }
         });
     tools.addView(
         button(
+            R.drawable.ic_text,
             "글자",
             () ->
                 edit(
@@ -1646,12 +2222,16 @@ public final class MainActivity extends Activity {
                         pageCanvas.pendingImage = null;
                         pageCanvas.ink = false;
                         inkMode = false;
-                        pen.setText("펜 켜기");
+                        penLook(pen, false);
                         message("넣을 위치를 누르세요.");
                       }
                     })));
-    tools.addView(button("서명", () -> picker(SIGNATURE, "image/*")));
-    content.addView(label("한 번의 필기·삽입마다 자동 저장합니다. 펜을 끄면 스크롤할 수 있습니다.", 12, green));
+    tools.addView(button(R.drawable.ic_sign, "서명", () -> picker(SIGNATURE, "image/*")));
+    tools.addView(button(R.drawable.ic_tools, "펜 설정", this::penSettings));
+    content.addView(
+        infoRow(
+            (page + 1) + " / " + pdf.count() + " 페이지",
+            "쓰거나 넣을 때마다 자동 저장 · 펜을 끄면 화면을 움직일 수 있어요"));
     pageCanvas =
         new PageCanvas(
             this,
@@ -1661,38 +2241,66 @@ public final class MainActivity extends Activity {
     pageCanvas.ink = inkMode;
     pageCanvas.strokeColor = penColor;
     pageCanvas.strokeWidth = penWidth;
-    pen.setText(inkMode ? "펜 끄기" : "펜 켜기");
-    addPage(pageCanvas);
+    penLook(pen, inkMode);
+    turnPage("pdf", addPage(pageCanvas));
+    restoreScroll();
   }
 
-  private void addPage(View view) {
+  private void penLook(Button pen, boolean on) {
+    pen.setText(on ? "펜 끄기" : "펜");
+    pen.setTextColor(on ? Color.WHITE : ink);
+    pen.setBackground(ripple(on ? accent : fill, 12));
+    tintIcons(pen, on ? Color.WHITE : accent);
+    pen.setContentDescription(on ? "펜 끄기" : "펜 켜기");
+  }
+
+  private ZoomPage addPage(View view) {
     ZoomPage area = new ZoomPage(this, view, zoom, value -> zoom = value);
-    LinearLayout nav = horizontal();
-    TextView amount = label(Math.round(zoom * 100) + "% · 두 손가락으로 확대", 12, muted);
-    nav.addView(
+    area.setPadding(0, dp(4), 0, dp(14));
+    view.setOutlineProvider(ViewOutlineProvider.BOUNDS);
+    view.setElevation(dp(dark ? 2 : 5));
+    LinearLayout bar = horizontal();
+    bar.setPadding(0, dp(8), 0, dp(4));
+    TextView amount = pill(Math.round(zoom * 100) + "%");
+    Button out =
         button(
-            "축소",
+            R.drawable.ic_zoom_out,
+            "",
             () -> {
               area.setZoom(zoom - .25f);
-              amount.setText(Math.round(zoom * 100) + "% · 두 손가락으로 확대");
-            }));
-    nav.addView(
+              amount.setText(Math.round(zoom * 100) + "%");
+            });
+    out.setContentDescription("축소");
+    Button zoomIn =
         button(
-            "확대",
+            R.drawable.ic_zoom_in,
+            "",
             () -> {
               area.setZoom(zoom + .25f);
-              amount.setText(Math.round(zoom * 100) + "% · 두 손가락으로 확대");
-            }));
-    nav.addView(
+              amount.setText(Math.round(zoom * 100) + "%");
+            });
+    zoomIn.setContentDescription("확대");
+    bar.addView(out);
+    bar.addView(zoomIn);
+    bar.addView(
         button(
+            R.drawable.ic_fit,
             "맞춤",
             () -> {
               area.setZoom(1);
-              amount.setText("100% · 두 손가락으로 확대");
+              amount.setText("100%");
             }));
-    content.addView(nav);
-    content.addView(amount);
+    LinearLayout readout = new LinearLayout(this);
+    readout.setGravity(Gravity.CENTER_VERTICAL);
+    readout.setMinimumHeight(dp(48));
+    readout.addView(amount);
+    TextView hint = label("두 손가락으로 확대", 12, muted);
+    hint.setPadding(dp(8), 0, 0, 0);
+    readout.addView(hint);
+    bar.addView(readout);
+    content.addView(bar);
     content.addView(area, new LinearLayout.LayoutParams(-1, -2));
+    return area;
   }
 
   private void signature(Uri uri) {
@@ -1835,12 +2443,11 @@ public final class MainActivity extends Activity {
   }
 
   private void styleDialog(DocumentStyle initial, boolean numbers, StyleAction action) {
-    LinearLayout form = vertical();
-    form.setPadding(dp(16), 0, dp(16), dp(8));
+    LinearLayout form = form();
     EditText font = field("글꼴 이름", initial.font), size = field("크기(pt)", "" + initial.size);
     size.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
-    form.addView(font);
-    form.addView(size);
+    addField(form, font);
+    addField(form, size);
     CheckBox bold = new CheckBox(this);
     bold.setText("굵게");
     bold.setChecked(initial.bold);
@@ -1895,25 +2502,91 @@ public final class MainActivity extends Activity {
     v.setHint(hint);
     v.setText(value);
     v.setSingleLine(true);
-    v.setPadding(dp(16), dp(8), dp(16), dp(8));
+    v.setTextSize(16);
+    v.setTextColor(ink);
+    v.setHintTextColor(muted);
+    v.setPadding(dp(14), dp(12), dp(14), dp(12));
+    GradientDrawable focused = round(well, 12), idle = round(well, 12);
+    focused.setStroke(dp(2), accent);
+    idle.setStroke(1, border);
+    StateListDrawable bg = new StateListDrawable();
+    bg.addState(new int[] {android.R.attr.state_focused}, focused);
+    bg.addState(new int[] {}, idle);
+    v.setBackground(bg);
     return v;
   }
 
+  private LinearLayout form() {
+    LinearLayout form = vertical();
+    form.setPadding(dp(20), dp(10), dp(20), dp(4));
+    return form;
+  }
+
+  private void addField(LinearLayout form, View view) {
+    LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
+    p.bottomMargin = dp(10);
+    form.addView(view, p);
+  }
+
   private void edit(String title, String value, boolean multiline, TextAction action) {
+    edit(title, value, multiline, action, null, null);
+  }
+
+  /**
+   * Text entry sheet. Long text wraps instead of scrolling sideways, the keyboard opens at once
+   * and the Done key applies. An optional middle button leads to related actions.
+   */
+  private void edit(
+      String title,
+      String value,
+      boolean multiline,
+      TextAction action,
+      String extra,
+      Runnable extraAction) {
     EditText v = field(title, value);
-    v.setInputType(
-        InputType.TYPE_CLASS_TEXT | (multiline ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : 0));
-    v.setSingleLine(!multiline);
-    new AlertDialog.Builder(this)
-        .setTitle(title)
-        .setView(v)
-        .setNegativeButton("취소", null)
-        .setPositiveButton(
-            "적용",
-            (d, w) -> {
-              if (!busy) action.accept(v.getText().toString());
-            })
-        .show();
+    if (multiline) {
+      v.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+      v.setSingleLine(false);
+      v.setMaxLines(8);
+    } else {
+      v.setInputType(InputType.TYPE_CLASS_TEXT);
+      v.setHorizontallyScrolling(false);
+      v.setMaxLines(7);
+      v.setImeOptions(EditorInfo.IME_ACTION_DONE);
+    }
+    v.setLineSpacing(0, 1.2f);
+    v.setSelection(v.getText().length());
+    LinearLayout box = form();
+    addField(box, v);
+    AlertDialog.Builder builder =
+        new AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setNegativeButton("취소", null)
+            .setPositiveButton(
+                "적용",
+                (d, w) -> {
+                  if (!busy) action.accept(v.getText().toString());
+                });
+    if (extra != null && extraAction != null)
+      builder.setNeutralButton(
+          extra,
+          (d, w) -> {
+            if (!busy) extraAction.run();
+          });
+    AlertDialog dialog = builder.create();
+    if (dialog.getWindow() != null)
+      dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+    v.setOnEditorActionListener(
+        (view, id, event) -> {
+          if (id == EditorInfo.IME_ACTION_DONE) {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            return true;
+          }
+          return false;
+        });
+    dialog.show();
+    v.requestFocus();
   }
 
   private void guard(Runnable next) {
@@ -1978,6 +2651,8 @@ public final class MainActivity extends Activity {
       undoButton.setEnabled(!busy && history != null && history.canUndo());
       redoButton.setEnabled(!busy && history != null && history.canRedo());
       saveButton.setEnabled(!busy && input != null);
+      for (Button b : new Button[] {undoButton, redoButton, saveButton})
+        b.animate().alpha(b.isEnabled() ? 1f : 0.35f).setDuration(180).start();
     }
   }
 
@@ -1989,8 +2664,36 @@ public final class MainActivity extends Activity {
     }
   }
 
+  private final Runnable hideHud =
+      () -> {
+        TextView banner = hud;
+        if (banner == null) return;
+        banner
+            .animate()
+            .alpha(0)
+            .translationY(-dp(16))
+            .setDuration(220)
+            .setInterpolator(Motion.EASE)
+            .withEndAction(() -> banner.setVisibility(View.GONE))
+            .start();
+      };
+
   private void message(String text) {
-    Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+    if (hud == null) {
+      Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+      return;
+    }
+    hud.removeCallbacks(hideHud);
+    hud.setText(text);
+    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) hud.getLayoutParams();
+    p.topMargin = topInset + dp(12);
+    hud.setLayoutParams(p);
+    hud.setVisibility(View.VISIBLE);
+    hud.animate().cancel();
+    hud.setAlpha(0);
+    hud.setTranslationY(-dp(24));
+    hud.animate().alpha(1).translationY(0).setDuration(320).setInterpolator(Motion.EASE).start();
+    hud.postDelayed(hideHud, 2600 + Math.min(3000, text.length() * 40L));
   }
 
   private void error(Exception e) {
